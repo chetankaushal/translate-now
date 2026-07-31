@@ -1,0 +1,22 @@
+appId: ${MAESTRO_APP_ID}
+name: Boot and render
+---
+- launchApp:
+    clearState: true
+
+# The app got past the JS bundle and mounted the root screen.
+- assertVisible:
+    id: 'screen-translate'
+
+# Core chrome is present.
+- assertVisible: 'TRANSLATE NOW'
+- assertVisible:
+    id: 'input-source'
+- assertVisible:
+    id: 'swap-languages'
+- assertVisible:
+    id: 'translate-button'
+
+# Default language pair rendered from state, not hardcoded markup.
+- assertVisible: 'EN'
+- assertVisible: 'ES'

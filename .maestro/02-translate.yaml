@@ -1,0 +1,23 @@
+appId: ${MAESTRO_APP_ID}
+name: Translate a phrase end to end
+---
+- launchApp:
+    clearState: true
+
+- tapOn:
+    id: 'input-source'
+- inputText: 'Good morning'
+
+# Button should have become enabled now that there is input.
+- tapOn:
+    id: 'translate-button'
+
+# Provider round-trip completed and the result reached the UI.
+# Mock provider returns "[<target>] <source>", so this proves the full path:
+# TextInput -> store -> provider -> store -> output Text.
+- extendedWaitUntil:
+    visible: '[es] Good morning'
+    timeout: 10000
+
+- assertVisible:
+    id: 'copy-output'

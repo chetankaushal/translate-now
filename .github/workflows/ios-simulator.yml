@@ -1,0 +1,161 @@
+name: iOS Simulator
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUNDLE_ID: com.movil.translatenow
+  EXPO_PUBLIC_TRANSLATION_PROVIDER: mock
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # No `cache: npm` here — that option hard-fails when a lockfile is
+      # missing, turning a warning into a dead build. Cached separately below.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Environment report
+        run: |
+          echo "node    $(node -v)"
+          echo "npm     $(npm -v)"
+          echo "xcodes:"; ls /Applications | grep -i '^Xcode' || true
+
+      # Picks the newest installed Xcode rather than pinning a version that
+      # vanishes whenever GitHub rotates the runner image.
+      - name: Select newest Xcode
+        run: |
+          LATEST=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          echo "Using $LATEST"
+          sudo xcode-select -s "$LATEST"
+          xcodebuild -version
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      - name: Install JS dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "::warning::No package-lock.json committed. Falling back to npm install."
+            npm install
+          fi
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Generate native project
+        run: npx expo prebuild --platform ios --clean
+
+      # The scheme is derived by prebuild from the app name. Reading it back
+      # beats hardcoding a guess that breaks if the name ever changes.
+      - name: Detect workspace and scheme
+        run: |
+          WS=$(find ios -maxdepth 1 -name '*.xcworkspace' | head -1)
+          test -n "$WS" || { echo "prebuild produced no xcworkspace"; exit 1; }
+          SCHEME=$(basename "$WS" .xcworkspace)
+          echo "Workspace: $WS"
+          echo "Scheme:    $SCHEME"
+          echo "WORKSPACE=$WS" >> "$GITHUB_ENV"
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: pods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-
+
+      - name: Install pods
+        working-directory: ios
+        run: pod install
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          FORMAT=cat
+          command -v xcbeautify >/dev/null && FORMAT=xcbeautify
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build | $FORMAT
+
+      # Runtime and device type are queried, not pinned. Runner images rotate
+      # simulator runtimes regularly; a hardcoded one is a time bomb.
+      - name: Boot simulator
+        run: |
+          RUNTIME=$(xcrun simctl list runtimes --json \
+            | python3 -c "import sys,json;r=[x['identifier'] for x in json.load(sys.stdin)['runtimes'] if x['isAvailable'] and 'iOS' in x['name']];print(sorted(r)[-1])")
+          DEVTYPE=$(xcrun simctl list devicetypes --json \
+            | python3 -c "import sys,json;d=[x['identifier'] for x in json.load(sys.stdin)['devicetypes'] if 'iPhone' in x['name'] and 'SE' not in x['name']];print(sorted(d)[-1])")
+          echo "Runtime: $RUNTIME"
+          echo "Device:  $DEVTYPE"
+          UDID=$(xcrun simctl create ci-iphone "$DEVTYPE" "$RUNTIME")
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+
+      - name: Install app
+        run: |
+          APP=$(find build/Build/Products/Debug-iphonesimulator -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP" || { echo "No .app was produced"; exit 1; }
+          echo "Installing $APP"
+          xcrun simctl install "$SIM_UDID" "$APP"
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+
+      - name: Install Maestro
+        run: |
+          curl -fsSL https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Run smoke tests
+        env:
+          MAESTRO_APP_ID: ${{ env.BUNDLE_ID }}
+        run: maestro test .maestro/ --format junit --output maestro-ios.xml
+
+      - name: Upload .app
+        if: success()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ios-simulator-app
+          path: ${{ env.APP_PATH }}
+          retention-days: 14
+
+      # upload-artifact does NOT expand `~`, so the Maestro output directory
+      # must be spelled out or the upload silently finds nothing.
+      - name: Upload test results and screenshots
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ios-test-results
+          path: |
+            maestro-ios.xml
+            /Users/runner/.maestro/tests/
+          if-no-files-found: warn
+          retention-days: 14

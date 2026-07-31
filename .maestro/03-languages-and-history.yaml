@@ -1,0 +1,44 @@
+appId: ${MAESTRO_APP_ID}
+name: Language selection, swap, and history
+---
+- launchApp:
+    clearState: true
+
+# --- Change the target language through the sheet ---
+- tapOn:
+    id: 'picker-to'
+- assertVisible: 'Translate to'
+- tapOn:
+    id: 'lang-to-ja'
+- assertVisible: 'JA'
+- assertVisible: 'Japanese'
+
+# --- Translate into the newly chosen language ---
+- tapOn:
+    id: 'input-source'
+- inputText: 'Thank you'
+- tapOn:
+    id: 'translate-button'
+- extendedWaitUntil:
+    visible: '[ja] Thank you'
+    timeout: 10000
+
+# --- Swap should invert the pair and move the result into the input ---
+- tapOn:
+    id: 'swap-languages'
+- assertVisible: 'Japanese'
+- assertVisible: 'English'
+
+# --- History recorded the translation ---
+- tapOn:
+    id: 'open-history'
+- assertVisible:
+    id: 'screen-history'
+- assertVisible: 'Thank you'
+- assertVisible: 'EN → JA'
+
+# --- Clearing works ---
+- tapOn:
+    id: 'clear-history'
+- assertVisible:
+    id: 'history-empty'
